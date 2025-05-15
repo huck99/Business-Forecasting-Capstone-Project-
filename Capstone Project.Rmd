@@ -1,0 +1,736 @@
+---
+title: "Business Forecasting Capstone Project"
+author: "Ibrahim Quansah"
+date: "`r format(Sys.Date())`"
+output:
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
+always_allow_html: yes
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+
+```{r, message=FALSE}
+#install.packages(c("TTR", "zoo", "dplyr", "sqldf", "TSstudio", "ggplot2", "hrbrthemes", "lubridate", "readr", "forecast")) # After the first installation, you can comment out the R command by adding # in front so that you don't have to repeatedly install it.
+library(TTR)
+library(dplyr)
+library(zoo)
+library(sqldf)
+library(TSstudio)
+library(ggplot2)
+library(hrbrthemes) 
+library(readr)
+library(lubridate)
+library(forecast)
+```
+
+
+# 1. Introduction
+
+## a. Business Interest and Objective
+**Sales Performance Analysis**
+
+**Our business want to know how the various categories of products are performing so that we open warehouses in different locations.**
+
+## b. The Problem to Solve
+
+*Which Categories produce more sales so that  we increase inventory**
+**Which Category is not Performing so that we stop selling**
+
+
+
+
+
+# Data Description and Exploration 
+```{r echo=FALSE}
+# to upload your CSV data file to this cloud project, in the toolbar of "Files" tab, click on "Upload"->"Choose File"->"Open"->"Ok". 
+SalesData <- read_csv("SalesData.csv")
+head(SalesData, 10)
+
+```
+#Extracting the monthly sales of each category for the year 2018
+```{r, message=FALSE}
+SalesData$`Order Date` <- as.Date(SalesData$`Order Date`, format = "%m/%d/%Y")
+monthly_sales <- SalesData %>%
+  #filter(year(`Order Date`) == 2018, !is.na(`Order Date`)) %>%
+  group_by(Month = format(`Order Date`, '%Y-%m'), Category) %>%
+  summarize(Total_Sales = sum(Sales))
+
+head(monthly_sales, 10)
+
+
+
+
+```
+#Exploring the different components of this time series data
+```{r, message=FALSE}
+library(stats)
+monthly_sales.ts <- ts(monthly_sales$Total_Sales, frequency = 12, start = c(2015, 1))
+
+
+ts_decompose(monthly_sales.ts)
+ts_cor(monthly_sales.ts)
+
+```
+#Extracting the monthly sales of all the 3 categories
+#t_monthlysales = total monthly sales
+#Furniture_S = Furniture Sales
+```{r, message=FALSE}
+t_monthlysales<-sqldf("select distinct month as Month, 
+              sum(Total_Sales) as `Monthly Sales` 
+             from monthly_sales group by month")
+
+na.omit(t_monthlysales)
+t_monthlysales <- t_monthlysales[complete.cases(t_monthlysales), ]
+MonthlySales.ts<- ts(t_monthlysales$`Monthly Sales`, frequency = 12)
+
+ts_decompose(MonthlySales.ts)
+ts_cor(MonthlySales.ts)
+
+
+Furniture <-sqldf("select distinct Month as Month, 
+             Total_Sales as Furniture 
+             from monthly_sales where Category = 'Furniture'")
+head(Furniture, 10)
+Furniture <- Furniture[complete.cases(Furniture), ]
+
+Furniture_S <- merge(t_monthlysales, Furniture, by.x = "Month", by.y = "Month")
+head(Furniture_S, 10)
+num_rows <- nrow(Furniture_S)
+print(num_rows)
+
+Furniture.ts<-ts(Furniture_S$Furniture, frequency = 12)
+ts_plot(Furniture.ts)
+ts_cor(Furniture.ts)
+
+```
+
+#Office_Supplies_S = Office Supplies Sales
+```{r, message=FALSE}
+
+Office_Supplies <-sqldf("select distinct Month as Month, 
+             Total_Sales as `Office Supplies` 
+             from monthly_sales where Category = 'Office Supplies'")
+Office_Supplies <- Office_Supplies[complete.cases(Office_Supplies), ]
+
+
+head(Office_Supplies, 10)
+
+Office_Supplies_S <- merge(t_monthlysales, Office_Supplies, by.x = "Month", by.y = "Month")
+head(Office_Supplies_S, 10)
+Office_Supplies.ts <- ts(Office_Supplies_S$`Office Supplies`, frequency = 12)
+ts_plot(Office_Supplies.ts)
+ts_cor(Office_Supplies.ts)
+```
+
+#Technology_S = Technology Sales
+```{r, message=FALSE}
+
+Technology <-sqldf("select distinct Month as Month, 
+             Total_Sales as Technology 
+             from monthly_sales where Category = 'Technology'")
+head(Technology, 10)
+Technology <- Technology[complete.cases(Technology), ]
+
+Technology_S <- merge(t_monthlysales, Technology, by.x = "Month", by.y = "Month")
+head(Technology_S, 10)
+Technology.ts<-ts(Technology_S$Technology, frequency = 12)
+ts_plot(Technology.ts)
+ts_cor(Technology.ts)
+```
+
+# 3. Models and Analysis
+#Simple Regression Model for Furniture
+```{r, message=FALSE}
+Furniture_S$Monthly_Sales_lag1<-lag(Furniture_S$`Monthly Sales`)
+Furniture_S.SLR <- (Furniture_S)
+head(Furniture_S.SLR, 10)
+
+```
+
+
+
+
+
+#Simple regression model to predict trend of FurnitureSales s in the coming month using the 1-lagged total monthly sales `Monthly_Sales_lag1` as a predictor
+```{r, message=FALSE}
+
+Furniture.SLR<-lm(Furniture ~ Monthly_Sales_lag1, data = Furniture_S.SLR)
+
+```
+
+
+
+#Point forecast and the 95% range forecast for trend of Furniture orders in the coming month.
+```{r, message=FALSE}
+newdata<-data.frame(Monthly_Sales_lag1=c(16647.04)) 
+forecast<-predict(Furniture.SLR , # using the built simple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+```
+
+#Creating new column `Monthly_Sales_lag2` in the merged dataset to store the 2-lagged total monthly sales and remove the row with missing value.
+```{r, message=FALSE, warning=FALSE}
+Furniture_S$Monthly_Sales_lag2<-lag(Furniture_S$`Monthly Sales`, 2)
+
+Furniture_S.MLR1<-na.omit(Furniture_S)
+head(Furniture_S, 10)
+
+```
+
+#Multiple regression model to predict trend of Furniture orders in coming month using the 1-lagged t_monthlysales `t_monthlysaleslag1` and 2-lagged total orders `t_monthlysaleslag2` as predictors.
+```{r, message=FALSE, warning=FALSE}
+Furniture_S.MLR1$Monthly_Sales_lag1 <- lag(Furniture_S.MLR1$`Monthly Sales`)
+Furniture.MLR1<-lm(Furniture ~ Monthly_Sales_lag1 + Monthly_Sales_lag2, data = Furniture_S.MLR1)
+```
+
+
+
+#Point forecast and the 95% range forecast for trend of Furniture orders in the coming month
+```{r, message=FALSE, warning=FALSE}
+Furniture_S.MLR1$Monthly_Sales_lag1 <- lag(Furniture_S.MLR1$`Monthly Sales`)
+Furniture_S.MLR1$Monthly_Sales_lag2 <- lag(Furniture_S.MLR1$`Monthly Sales`, 2)
+Furniture_S.MLR1 <- na.omit(Furniture_S.MLR1)
+Furniture.MLR1 <- lm(Furniture ~ Monthly_Sales_lag1 + Monthly_Sales_lag2, data = Furniture_S.MLR1)
+
+newdata<-data.frame(Monthly_Sales_lag1 = c(16647.04), Monthly_Sales_lag2 = c(17407.27)) 
+predict(Furniture.MLR1 , # using the first built multiple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+
+```
+
+#Multiple Regression 2
+
+
+#A new column `t_monthlysaleslag3` in the merged dataset to store the 3-lagged total monthly sales and remove the row with missing value.
+```{r, message=FALSE}
+Furniture_S$Monthly_Saleslag_3<-lag(Furniture_S$`Monthly Sales`, 3)
+Furniture_S.MLR2<-na.omit(Furniture_S)
+head(Furniture_S.MLR2, 10)
+```
+
+#Multiple regression model to predict trend of Furniture orders in the coming Month using the 1-lagged total monthly sales `Monthly_Sales_lag1`, 2-lagged total monthly sales `Monthly_Sales_lag2`, and 3-lagged total mothly sales `Monthly_Sales_lag3` as predictors.
+
+```{r, message=FALSE, warning=FALSE}
+Furniture_S.MLR2$Monthly_Sales_lag1 <- lag(Furniture_S.MLR2$`Monthly Sales`, 1)
+Furniture_S.MLR2$Monthly_Sales_lag2 <- lag(Furniture_S.MLR2$`Monthly Sales`, 2)
+Furniture_S.MLR2$Monthly_Sales_lag3 <- lag(Furniture_S.MLR2$`Monthly Sales`, 3)
+Furniture_S.MLR2 <- na.omit(Furniture_S.MLR2)
+Furniture.MLR2<-lm(Furniture ~ Monthly_Sales_lag1 + Monthly_Sales_lag2 + Monthly_Sales_lag3, data = Furniture_S.MLR2)
+```
+
+#Point forecast and the 95% range forecast for trend of Furniture Sales in the coming month.
+```{r, message=FALSE, warning=FALSE}
+Furniture_S.MLR2$Monthly_Sales_lag1 <- lag(Furniture_S.MLR2$`Monthly Sales`, 1)
+Furniture_S.MLR2$Monthly_Sales_lag2 <- lag(Furniture_S.MLR2$`Monthly Sales`, 2)
+Furniture_S.MLR2$Monthly_Sales_lag3 <- lag(Furniture_S.MLR2$`Monthly Sales`, 3)
+
+newdata <- data.frame(
+  Monthly_Sales_lag1 = c(16647.04),
+  Monthly_Sales_lag2 = c(17407.27),
+  Monthly_Sales_lag3 = c(17558.32)) 
+predict(Furniture.MLR2 , # using the built second multiple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+
+```
+
+the Adjusted-Rsq of the three models (SLR, MLR1, MLR2) respectively
+```{r, message=FALSE, warning=FALSE}
+summary(Furniture.SLR)$adj.r.squared
+summary(Furniture.MLR1)$adj.r.squared
+summary(Furniture.MLR2)$adj.r.squared
+```
+
+#Simple Regression Model for Office Supplies
+```{r, message=FALSE}
+Office_Supplies_S$Monthly_Sales_lag1<-lag(Office_Supplies_S$`Monthly Sales`)
+Office_Supplies_S.SLR <- (Office_Supplies_S)
+head(Office_Supplies_S.SLR, 10)
+
+```
+
+
+
+#Simple regression model to predict trend of Office Supplies Sales in the coming month using the 1-lagged total monthly sales `Monthly_Sales_lag1` as a predictor
+```{r, message=FALSE}
+Office_Supplies.SLR<-lm(`Office Supplies` ~ Monthly_Sales_lag1, data = Office_Supplies_S.SLR)
+
+
+```
+
+#Point forecast and the 95% range forecast for trend of Office Supplies sales in the coming month.
+```{r, message=FALSE}
+newdata<-data.frame(Monthly_Sales_lag1=c(16647.04)) 
+forecast<-predict(Office_Supplies.SLR , # using the built simple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+```
+
+#Creating new column `Monthly_Sales_lag2` in the merged dataset to store the 2-lagged total monthly sales and remove the row with missing value.
+```{r, message=FALSE}
+Office_Supplies_S$Monthly_Sales_lag2<-lag(Office_Supplies_S$Monthly_Sales, 2)
+
+Office_Supplies_S.MLR1<-na.omit(Office_Supplies_S)
+head(Office_Supplies_S.MLR1, 10)
+
+```
+#Multiple regression model to predict trend of Office Supplies orders in coming month using the 1-lagged t_monthlysales `Monthly_Sales_lag1` and 2-lagged total orders `Monthly_Sales_lag2` as predictors.
+```{r, message=FALSE, warning=FALSE}
+Office_Supplies_S.MLR1$Monthly_Sales_lag1 <- lag(Office_Supplies_S.MLR1$`Monthly Sales`)
+Office_Supplies.MLR1<-lm(`Office Supplies` ~ Monthly_Sales_lag1 + Monthly_Sales_lag2, data = Office_Supplies_S.MLR1)
+```
+
+#Point forecast and the 95% range forecast for trend of Office Supplies Sales in the coming month
+```{r, message=FALSE, warning=FALSE}
+Office_Supplies_S.MLR1$Monthly_Sales_lag1 <- lag(Office_Supplies_S.MLR1$`Monthly Sales`)
+Office_Supplies_S.MLR1$Monthly_Sales_lag2 <- lag(Office_Supplies_S.MLR1$`Monthly Sales`, 2)
+Office_Supplies_S.MLR1 <- na.omit(Office_Supplies_S.MLR1)
+Office_Supplies.MLR1 <- lm(`Office Supplies` ~ Monthly_Sales_lag1 + Monthly_Sales_lag2, data = Office_Supplies_S.MLR1)
+
+newdata<-data.frame(Monthly_Sales_lag1 = c(16647.04), Monthly_Sales_lag2 = c(17407.27)) 
+predict(Office_Supplies.MLR1 , # using the first built multiple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+
+```
+
+#Multiple Regression 2
+
+
+#A new column `Monthly_Sales_lag3` in the merged dataset to store the 3-lagged total monthly sales and remove the row with missing value.
+```{r, message=FALSE}
+Office_Supplies_S$Monthly_Sales_lag3<-lag(Office_Supplies_S$`Monthly Sales`, 3)
+Office_Supplies_S.MLR2<-na.omit(Office_Supplies_S)
+head(Office_Supplies_S.MLR2, 10)
+```
+
+#Multiple regression model to predict trend of Office Supply Sales in the coming Month using the 1-lagged total monthly sales `Monthly_Sales_lag1`, 2-lagged total monthly sales `Monthly_Sales_lag2`, and 3-lagged total mothly sales `Monthly_Sales_lag3` as predictors.
+
+```{r, message=FALSE, warning=FALSE}
+Office_Supplies_S.MLR2$Monthly_Sales_lag1 <- lag(Office_Supplies_S.MLR2$`Monthly Sales`, 1)
+Office_Supplies_S.MLR2$Monthly_Sales_lag2 <- lag(Office_Supplies_S.MLR2$`Monthly Sales`, 2)
+Office_Supplies_S.MLR2$Monthly_Sales_lag3 <- lag(Office_Supplies_S.MLR2$`Monthly Sales`, 3)
+Office_Supplies_S.MLR2 <- na.omit(Office_Supplies_S.MLR2)
+Office_Supplies.MLR2<-lm(`Office Supplies` ~ Monthly_Sales_lag1 + Monthly_Sales_lag2 + Monthly_Sales_lag3, data = Office_Supplies_S.MLR2)
+```
+
+#Point forecast and the 95% range forecast for trend of Office Supplies Sales in the coming month.
+```{r, message=FALSE, warning=FALSE}
+Office_Supplies_S.MLR2$`Monthly_Sales_lag1` <- lag(Office_Supplies_S.MLR2$`Monthly Sales`, 1)
+Office_Supplies_S.MLR2$`Monthly_Sales_lag2` <- lag(Office_Supplies_S.MLR2$`Monthly Sales`, 2)
+Office_Supplies_S.MLR2$`Monthly_Sales_lag3` <- lag(Office_Supplies_S.MLR2$`Monthly Sales`, 3)
+
+newdata <- data.frame(
+  `Monthly_Sales_lag1` = c(16647.04),
+  `Monthly_Sales_lag2` = c(17407.27),
+  `Monthly_Sales_lag3` = c(17558.32)) 
+predict(Office_Supplies.MLR2 , # using the built second multiple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+
+```
+
+
+
+#Simple Regression Model for Technology
+```{r, message=FALSE}
+Technology_S$Monthly_Sales_lag1<-lag(Technology_S$`Monthly Sales`)
+Technology_S.SLR <- (Technology_S)
+head(Technology_S.SLR, 10)
+
+```
+
+#Simple regression model to predict trend of Technology Sales in the coming month using the 1-lagged total monthly sales `Monthly_Sales_lag1` as a predictor
+```{r, message=FALSE}
+Technology.SLR<-lm(Technology ~ Monthly_Sales_lag1, data = Technology_S.SLR)
+
+
+```
+
+#Point forecast and the 95% range forecast for trend of Technology Sales in the coming month.
+```{r, message=FALSE}
+newdata<-data.frame(Monthly_Sales_lag1=c(16647.04)) 
+forecast<-predict(Technology.SLR , # using the built simple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+```
+
+
+#Creating new column `Monthly_Sales_lag2` in the merged dataset to store the 2-lagged total monthly sales and remove the row with missing value.
+```{r, message=FALSE}
+Technology_S$Monthly_Sales_lag2<-lag(Technology_S$`Monthly Sales`, 2)
+
+Technology_S.MLR1<-na.omit(Technology_S)
+head(Technology_S.MLR1, 10)
+
+```
+#Multiple regression model to predict trend of Technology Sales in coming month using the 1-lagged t_monthlysales `Monthly_Sales_lag1` and 2-lagged total orders `Monthly_Sales_lag2` as predictors.
+```{r, message=FALSE, warning=FALSE}
+Technology_S.MLR1$Monthly_Sales_lag1 <- lag(Technology_S.MLR1$`Monthly Sales`)
+Technology.MLR1<-lm(Technology ~ Monthly_Sales_lag1 + Monthly_Sales_lag2, data = Technology_S.MLR1)
+```
+
+#Point forecast and the 95% range forecast for trend of Technology Sales in the coming month
+```{r, message=FALSE, warning=FALSE}
+Technology_S.MLR1$Monthly_Sales_lag1 <- lag(Technology_S.MLR1$`Monthly Sales`)
+Technology_S.MLR1$Monthly_Sales_lag2 <- lag(Technology_S.MLR1$`Monthly Sales`, 2)
+Technology_S.MLR1 <- na.omit(Technology_S.MLR1)
+Technology.MLR1 <- lm(Technology ~ Monthly_Sales_lag1 + Monthly_Sales_lag2, data = Technology_S.MLR1)
+
+newdata<-data.frame(Monthly_Sales_lag1 = c(16647.04), Monthly_Sales_lag2 = c(17407.27)) 
+predict(Technology.MLR1 , # using the first built multiple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+
+```
+
+#Multiple Regression 2
+
+
+#A new column `Monthly_Sales_lag3` in the merged dataset to store the 3-lagged total monthly sales and remove the row with missing value.
+```{r, message=FALSE}
+Technology_S$Monthly_Sales_lag3<-lag(Technology_S$`Monthly Sales`, 3)
+Technology_S.MLR2<-na.omit(Technology_S)
+head(Technology_S.MLR2, 10)
+```
+
+#Multiple regression model to predict trend of Technology Sales in the coming Month using the 1-lagged total monthly sales `Monthly_Sales_lag1`, 2-lagged total monthly sales `Monthly_Sales_lag2`, and 3-lagged total mothly sales `Monthly_Sales_lag3` as predictors.
+
+```{r, message=FALSE, warning=FALSE}
+Technology_S.MLR2$Monthly_Sales_lag1 <- lag(Technology_S.MLR2$`Monthly Sales`, 1)
+Technology_S.MLR2$Monthly_Sales_lag2 <- lag(Technology_S.MLR2$`Monthly Sales`, 2)
+Technology_S.MLR2$Monthly_Sales_lag3 <- lag(Technology_S.MLR2$`Monthly Sales`, 3)
+Technology_S.MLR2 <- na.omit(Technology_S.MLR2)
+Technology.MLR2<-lm(Technology ~ Monthly_Sales_lag1 + Monthly_Sales_lag2 + Monthly_Sales_lag3, data = Technology_S.MLR2)
+```
+
+#Point forecast and the 95% range forecast for trend of Technology Sales in the coming month.
+```{r, message=FALSE, warning=FALSE}
+Technology_S.MLR2$Monthly_Sales_lag1 <- lag(Technology_S.MLR2$`Monthly Sales`, 1)
+Technology_S.MLR2$Monthly_Sales_lag2 <- lag(Technology_S.MLR2$`Monthly Sales`, 2)
+Technology_S.MLR2$Monthly_Sales_lag3 <- lag(Technology_S.MLR2$`Monthly Sales`, 3)
+
+newdata <- data.frame(
+  Monthly_Sales_lag1 = c(16647.04),
+  Monthly_Sales_lag2 = c(17407.27),
+  Monthly_Sales_lag3 = c(17558.32)) 
+predict(Technology.MLR2 , # using the built second multiple regression model to make the forecast 
+        newdata = newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.95 # with 95% probability 
+)
+
+```
+
+
+```
+
+#Furniture ARIMA candidate models
+```{r, message=FALSE, warning=FALSE}
+# convert Furniture Sales to time series data format
+Furniture.ts <- Furniture.ts[!is.na(Furniture.ts)]
+Furniture.ts<-ts(Furniture_S$Furniture, frequency = 12)
+
+ts_plot(Furniture.ts)
+ts_cor(Furniture.ts)
+
+# use BIC to identify the top three candidate models
+auto.arima(Furniture.ts[1:100], trace=TRUE, stationary = TRUE, seasonal = FALSE, ic = c("bic"))
+
+```
+```{r, message=FALSE, warning=FALSE}
+#Comparing the three candidate models
+Furniture.candidate1<-Arima(Furniture.ts[1:100], order=c(1,0,0))
+Furniture.candidate2<-Arima(Furniture.ts[1:100], order=c(0,0,1))
+print(Furniture.candidate2)
+Furniture.candidate3<-Arima(Furniture.ts[1:100], order=c(1,0,1))
+
+
+```
+```{r, message=FALSE, warning=FALSE}
+# apply the top three candidate models to predict for the most recent validation data observations
+Furniture.validation1  <- Arima(Furniture.ts[1:18], model=Furniture.candidate1)
+Furniture.validation2  <- Arima(Furniture.ts[1:48], model=Furniture.candidate2)
+Furniture.validation3  <- Arima(Furniture.ts[1:48], model=Furniture.candidate3)
+```
+
+#Office Supplies ARIMA candidate models
+```{r, message=FALSE, warning=FALSE}
+# convert Office Supplies Sales to time series data format
+Office_Supplies.ts <- ts(Office_Supplies_S$`Office Supplies`, frequency = 12)
+ts_plot(Office_Supplies.ts)
+ts_cor(Office_Supplies.ts)
+# use BIC to identify the top three candidate models
+auto.arima(Office_Supplies.ts[1:100], trace=TRUE, stationary = TRUE, seasonal = FALSE, ic = c("bic"))
+
+```
+```{r, message=FALSE, warning=FALSE}
+#Comparing the three candidate models
+Office_Supplies.candidate1<-Arima(Office_Supplies.ts[1:100], order=c(0,0,0))
+Office_Suppllies.candidate2<-Arima(Office_Supplies.ts[1:100], order=c(1,0,0))
+Office_Supplies.candidate3<-Arima(Office_Supplies.ts[1:100], order=c(0,0,1))
+
+```
+```{r, message=FALSE, warning=FALSE}
+# apply the top three candidate models to predict for the most recent validation data observations
+Office_Supplies.validation1  <- Arima(Office_Supplies.ts[1:48], model=Furniture.candidate1)
+Office_Supplies.validation2  <- Arima(Office_Supplies.ts[1:48], model=Furniture.candidate2)
+Office_Supplies.validation3  <- Arima(Office_Supplies.ts[1:48], model=Furniture.candidate3)
+```
+
+#Technology ARIMA candidate models
+```{r, message=FALSE, warning=FALSE}
+# convert Technology Sales to time series data format
+Technology.ts<-ts(Technology_S$Technology, frequency = 12)
+ts_plot(Technology.ts)
+ts_cor(Technology.ts)
+# use BIC to identify the top three candidate models
+auto.arima(Technology.ts[1:100], trace=TRUE, stationary = TRUE, seasonal = FALSE, ic = c("bic"))
+
+```
+```{r, message=FALSE, warning=FALSE}
+#Comparing the three candidate models
+Technology.candidate1<-Arima(Technology.ts[1:100], order=c(1,0,0))
+Technology.candidate2<-Arima(Technology.ts[1:100], order=c(0,0,1))
+Technology.candidate3<-Arima(Technology.ts[1:100], order=c(0,1,0))
+
+```
+```{r, message=FALSE, warning=FALSE}
+# apply the top three candidate models to predict for the most recent validation data observations
+Technology.validation1  <- Arima(Technology.ts[1:48], model=Technology.candidate1)
+Technology.validation2  <- Arima(Technology.ts[1:48], model=Technology.candidate2)
+Technology.validation3  <- Arima(Technology.ts[1:48], model=Technology.candidate3)
+```
+
+**Furniture trend projection model Adjusted-Rsq values**
+```{r message=FALSE, warning=FALSE}
+# report the Adjusted-Rsq values using "summary()$adj.r.squared" command
+#summary(Furniture_S.SLR)$adj.r.squared
+summary(Furniture.SLR)$adj.r.squared
+summary(Furniture.MLR1)$adj.r.squared
+summary(Furniture.MLR2)$adj.r.squared
+```
+
+**Office Supplies Sales trend projection model Adjusted-Rsq values**
+```{r message=FALSE, warning=FALSE}
+# report the Adjusted-Rsq values using "summary()$adj.r.squared" command
+summary(Office_Supplies.SLR)$adj.r.squared
+summary(Office_Supplies.MLR1)$adj.r.squared
+summary(Office_Supplies.MLR2)$adj.r.squared
+
+```
+
+**Techology Sales trend projection model Adjusted-Rsq values**
+```{r message=FALSE, warning=FALSE}
+# report the Adjusted-Rsq values using "summary()$adj.r.squared" command
+summary(Technology.SLR)$adj.r.squared
+summary(Technology.MLR1)$adj.r.squared
+summary(Technology.MLR2)$adj.r.squared
+```
+
+MAPE of the top 3 candidate models for each category of sales to choose the best ARIMA model for predicting sales in the coming month.
+
+**Furniture Sales ARIMA candidate model MAPE**
+```{r message=FALSE, warning=FALSE}
+# calculate MAPE for each of the top three candidate models
+accuracy(Furniture.validation1)
+accuracy(Furniture.validation2)
+accuracy(Furniture.validation3)
+
+# best model
+# ARIMA(1,0,1) with non-zero mean
+```
+
+**Office Supplies Sales ARIMA candidate model MAPE**
+```{r message=FALSE, warning=FALSE}
+# calculate MAPE for each of the top three candidate models
+accuracy(Office_Supplies.validation1)
+accuracy(Office_Supplies.validation2)
+accuracy(Office_Supplies.validation3)
+
+# best model
+# ARIMA(0,0,1) with non-zero mean
+```
+
+**Technology Sales ARIMA candidate model MAPE**
+```{r message=FALSE, warning=FALSE}
+# calculate MAPE for each of the top three candidate models
+accuracy(Technology.validation1)
+accuracy(Technology.validation2)
+accuracy(Technology.validation3)
+
+# best model
+# ARIMA(1,0,0) with non-zero mean
+```
+
+## Data forecasting
+
+**Forecast for Furniture Sales for next month**
+```{r message=FALSE, warning=FALSE}
+# 1. use the best trend projection model + AR(1) model for Furniture Sales to produce the upper bound of 90% range forecast for next week. 
+# peel off the predicted trend from the observed Thai cuisine orders to obtain their residuals.
+Furniture_S.MLR2$Residual<-Furniture_S.MLR2$Furniture-Furniture.MLR2$fitted.values
+
+# use the ts_cor() to create the ACF and PACF charts of the residual data
+Residual.ts<-ts(Furniture_S.MLR2$Residual)
+
+# Use AR(1) Model to predict the Furniture Sales residual data.  
+Furniture.AR.model <- Arima(Residual.ts, order = c(1,0,0))
+# Add the epsilon column (i.e., after peeling off trend and autocorrelation components) 
+# into the dataframe "Furniture_S.MLR2$epsilon" 
+Furniture_S.MLR2$epsilon<-Furniture.AR.model$residuals 
+
+# produce forecasts of Furniture Sales residual for next month 
+Furniture.residual.forecast<- forecast(Furniture.AR.model, h = 1, level=c(90)) # h=1 indicates one time step forward forecast; level=c(90) indicates we build 90% range forecast  
+
+# produce forecasts of trend of Furniture Sale for Next Month
+Furniture.newdata<-data.frame(Monthly_Sales_lag1=Furniture_S$`Monthly Sales`[48], Monthly_Sales_lag2 = Furniture_S$`Monthly Sales`[47], Monthly_Sales_lag3 = Furniture_S$`Monthly Sales`[46]) 
+Furniture.trend.forecast<- predict(Furniture.MLR2, # using the best trend model "MLR2" to make the forecast 
+        newdata = Furniture.newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.90 # with 90% probability 
+)
+
+Furniture.trend.forecast<-data.frame(Furniture.trend.forecast) # convert "trend.forecast" into a data frame
+
+# produce a forecast value for Thai cuisine order in next week
+Furniture.sale.forecast1<-Furniture.trend.forecast$upr + as.numeric(Furniture.residual.forecast$upper) # upper bound of 90% range forecast of Thai cuisine orders in next week (Note: the result is not really mathematically correct, but good enough for practical purpose)
+Furniture.sale.forecast1
+
+# 2. use the best ARIMA model for Thai cuisine order to produce the upper bound of 90% range forecast for next week.
+Furniture.fit.best<-Arima(Furniture.ts[1:48], order = c(1, 0, 1))
+Furniture_Sales.nextmonth<- forecast(Furniture.fit.best, h = 1, level=c(90))
+Furniture.sale.forecast2<-as.numeric(Furniture_Sales.nextmonth$upper)
+Furniture.sale.forecast2
+```
+
+**Forecast for Office Supply Sales for next month**
+```{r message=FALSE, warning=FALSE}
+# 1. use the best trend projection model + AR(1) model for Office Supply Sales to produce the upper bound of 90% range forecast for next week. 
+# peel off the predicted trend from the observed Continental cuisine orders to obtain their residuals.
+Office_Supplies_S.MLR2$Residual<-Office_Supplies_S.MLR2$`Office Supplies`-Office_Supplies.MLR2$fitted.values
+
+# use the ts_cor() to create the ACF and PACF charts of the residual data
+Residual.ts<-ts(Office_Supplies_S.MLR2$Residual)
+
+# Use AR(1) Model to predict the Office Supply order residual data.  
+Office_Supplies.AR.model <- Arima(Residual.ts, order = c(1,0,0))
+# Add the epsilon column (i.e., after peeling off trend and autocorrelation components) 
+# into the dataframe "Office_Supply_S.MLR2$epsilon" 
+Office_Supplies_S.MLR2$epsilon<-Office_Supplies.AR.model$residuals 
+
+# produce forecasts of Office Supply Sales residual for the next week 
+Office_Supplies.residual.forecast<- forecast(Office_Supplies.AR.model, h = 1, level=c(90)) # h=1 indicates one time step forward forecast; level=c(90) indicates we build 90% range forecast  
+
+# produce forecasts of trend of office Supply Sales for Next month
+Office_Supplies.newdata<-data.frame(Monthly_Sales_lag1=Office_Supplies_S$`Monthly Sales`[48], Monthly_Sales_lag2 = Office_Supplies_S$`Monthly Sales`[47], Monthly_Sales_lag3 = Office_Supplies_S$`Monthly Sales`[46]) 
+Office_Supplies.trend.forecast<- predict(Office_Supplies.MLR2, # using the best trend model "MLR2" to make the forecast 
+        newdata = Office_Supplies.newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.90 # with 90% probability 
+)
+
+Office_Supplies.trend.forecast<-data.frame(Office_Supplies.trend.forecast) # convert "trend.forecast" into a data frame
+
+# produce a forecast value for Office Supply Sales for next month
+Office_Supplies.sales.forecast1<-Office_Supplies.trend.forecast$upr + as.numeric(Office_Supplies.residual.forecast$upper) # upper bound of 90% range forecast of office Supply sales for next month (Note: the result is not really mathematically correct, but good enough for practical purpose)
+Office_Supplies.sales.forecast1
+
+# 2. use the best ARIMA model for Office Supply Sales to produce the upper bound of 90% range forecast for next week.
+Office_Supplies.fit.best<-Arima(Office_Supplies.ts[1:48], order = c(0, 0, 1))
+Office_Supplies_Sales.nextmonth<- forecast(Office_Supplies.fit.best, h = 1, level=c(90))
+Office_Supplies.sales.forecast2<-as.numeric(Office_Supplies_Sales.nextmonth$upper)
+Office_Supplies.sales.forecast2
+```
+
+**Forecast for Technology Sales for next month**
+```{r message=FALSE, warning=FALSE}
+# 1. use the best trend projection model + AR(1) model for Technology Sales to produce the upper bound of 90% range forecast for next week. 
+# peel off the predicted trend from the observed Indian cuisine orders to obtain their residuals.
+Technology_S.MLR2$Residual<-Technology_S.MLR2$Technology-Technology.MLR2$fitted.values
+
+# use the ts_cor() to create the ACF and PACF charts of the residual data
+Residual.ts<-ts(Technology_S.MLR2$Residual)
+
+# Use AR(1) Model to predict the Technology Sales residual data.  
+Technology.AR.model <- Arima(Residual.ts, order = c(1,0,0))
+# Add the epsilon column (i.e., after peeling off trend and autocorrelation components) 
+# into the dataframe "Technology SAles.MLR2$epsilon" 
+Technology_S.MLR2$epsilon<-Technology.AR.model$residuals 
+
+# produce forecasts of Indian cuisine order residual for the next week 
+Technology.residual.forecast<- forecast(Technology.AR.model, h = 1, level=c(90)) # h=1 indicates one time step forward forecast; level=c(90) indicates we build 90% range forecast  
+
+# produce forecasts of trend of Technology Sales in next month
+Technology.newdata<-data.frame(Monthly_Sales_lag1=Technology_S$`Monthly Sales`[48], Monthly_Sales_lag2 = Technology_S$`Monthly Sales`[47], Monthly_Sales_lag3 = Technology_S$`Monthly Sales`[46]) 
+Technology.trend.forecast<- predict(Technology.MLR2, # using the best trend model "MLR2" to make the forecast 
+        newdata = Technology.newdata, # provide the predictor value
+        interval = "confidence", # output the range forecast for the trend  
+        level=0.90 # with 90% probability 
+)
+
+Technology.trend.forecast<-data.frame(Technology.trend.forecast) # convert "trend.forecast" into a data frame
+
+# produce a forecast value for Indian cuisine order in next week
+Technology.sales.forecast1<-Technology.trend.forecast$upr + as.numeric(Technology.residual.forecast$upper) # upper bound of 90% range forecast of Indian cuisine orders in next week (Note: the result is not really mathematically correct, but good enough for practical purpose)
+Technology.sales.forecast1
+
+# 2. use the best ARIMA model for Technology Sales to produce the upper bound of 90% range forecast for next week.
+Technology.fit.best<-Arima(Technology.ts[1:48], order = c(1, 0, 0))
+Technology_sales.nextmonth<- forecast(Technology.fit.best, h = 1, level=c(90))
+Technology.sales.forecast2<-as.numeric(Technology_sales.nextmonth$upper)
+Technology.sales.forecast2
+```
+
+## a. Business Interest and Objective
+
+
+## b. The Problem to Solve
+
+
+# 2. Data Description and Exploration 
+
+
+
+## a. Forecasting models
+
+## b. Model performance comparison 
+
+## c. Data forecasting
+
+# 4. Discussion and Recommendation 
+**The business should prioritize the Technology category. Here’s why:**
+
+**Sales Performance: The Technology category consistently shows higher sales figures compared to Furniture and Office Supplies in the given monthly sales data.**
+
+**Trend Analysis: The decomposition of time series data for Technology sales indicates a strong seasonal pattern with significant peaks, suggesting higher demand at certain times of the year.**
+
+**Regression Models: The simple and multiple regression models built for forecasting future sales trends also suggest that Technology has a higher sales potential.**
+
+
+**It’s important to note that while Technology seems to be the leading category, the decision should also consider other factors such as profit margins, market trends, and customer demand. The data analysis provides a clear indication of sales performance, which is a crucial factor for inventory and warehouse planning.**
+
+
